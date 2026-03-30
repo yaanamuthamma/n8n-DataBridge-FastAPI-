@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Syntheta DataSync — 2-Stage Pipeline</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════════
+       CSS VARIABLES — THEME TOKENS
+    ═══════════════════════════════════════════════ */
+    :root { --transition: 0.38s cubic-bezier(0.4, 0, 0.2, 1); }
+
+    [data-theme="dark"] {
+      --bg-base:          #080b14;
+      --bg-card:          rgba(18, 24, 48, 0.72);
+      --bg-card-hover:    rgba(22, 30, 60, 0.88);
+      --bg-input:         rgba(6, 9, 20, 0.7);
+      --bg-topbar:        rgba(8, 11, 20, 0.88);
+      --border:           rgba(255,255,255,0.07);
+      --border-focus:     #ff6b35;
+      --border-hover:     rgba(255,107,53,0.25);
+      --text-primary:     #e8eaf6;
+      --text-secondary:   #7a8ba8;
+      --text-muted:       #4a5778;
+      --text-input:       #cdd5e0;
+      --text-placeholder: #3d4e68;
+      --accent:           #ff6b35;
+      --accent-glow:      rgba(255,107,53,0.18);
+      --accent-blue:      #53c0f0;
+      --accent-blue-glow: rgba(83,192,240,0.15);
+      --mesh1:            rgba(255,107,53,0.05);
+      --mesh2:            rgba(83,192,240,0.04);
+      --mesh3:            rgba(77,179,61,0.03);
+      --grid:             rgba(255,255,255,0.02);
+      --shadow:           0 8px 32px rgba(0,0,0,0.4);
+      --badge-s1-bg:      rgba(77,179,61,0.18);
+      --badge-s1-text:    #4db33d;
+      --badge-s2-bg:      rgba(0,117,143,0.18);
+      --badge-s2-text:    #00a5c0;
+      --badge-opt-bg:     rgba(255,165,0,0.15);
+      --badge-opt-text:   #ffa040;
+      --pill-bg:          rgba(46,204,113,0.1);
+      --pill-border:      rgba(46,204,113,0.3);
+      --pill-dot:         #2ecc71;
+      --pill-text:        #2ecc71;
+      --track:            rgba(255,255,255,0.08);
+      --track-border:     rgba(255,255,255,0.14);
+      --knob-bg:          #1e2a4a;
+    }
+
+    [data-theme="light"] {
+      --bg-base:          #eef0f8;
+      --bg-card:          rgba(255,255,255,0.82);
+      --bg-card-hover:    rgba(255,255,255,0.96);
+      --bg-input:         rgba(248,249,255,0.92);
+      --bg-topbar:        rgba(255,255,255,0.9);
+      --border:           rgba(0,0,0,0.07);
+      --border-focus:     #d95a20;
+      --border-hover:     rgba(217,90,32,0.28);
+      --text-primary:     #1a1f3c;
+      --text-secondary:   #5a6a8a;
+      --text-muted:       #9aa5b8;
+      --text-input:       #2a3050;
+      --text-placeholder: #b0bac8;
+      --accent:           #d95a20;
+      --accent-glow:      rgba(217,90,32,0.12);
+      --accent-blue:      #1a7fc4;
+      --accent-blue-glow: rgba(26,127,196,0.1);
+      --mesh1:            rgba(217,90,32,0.06);
+      --mesh2:            rgba(26,127,196,0.05);
+      --mesh3:            rgba(46,139,34,0.04);
+      --grid:             rgba(0,0,0,0.025);
+      --shadow:           0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04);
+      --badge-s1-bg:      rgba(46,139,34,0.12);
+      --badge-s1-text:    #226b1a;
+      --badge-s2-bg:      rgba(0,110,130,0.12);
+      --badge-s2-text:    #005f73;
+      --badge-opt-bg:     rgba(180,110,0,0.1);
+      --badge-opt-text:   #9a6000;
+      --pill-bg:          rgba(34,160,74,0.1);
+      --pill-border:      rgba(34,160,74,0.3);
+      --pill-dot:         #22a04a;
+      --pill-text:        #1a7a38;
+      --track:            rgba(0,0,0,0.06);
+      --track-border:     rgba(0,0,0,0.12);
+      --knob-bg:          #ffffff;
+    }
+
+    /* ═══════════════════════════════════════════════ RESET */
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh; overflow-x: hidden;
+      transition: background var(--transition), color var(--transition);
+    }
+
+    /* mesh + grid bg */
+    body::before {
+      content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      background:
+        radial-gradient(ellipse 60% 45% at 12% 22%, var(--mesh1) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 55% at 88% 78%, var(--mesh2) 0%, transparent 60%),
+        radial-gradient(ellipse 40% 60% at 52% 48%, var(--mesh3) 0%, transparent 70%);
+      transition: background var(--transition);
+    }
+    body::after {
+      content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+    .page { position:relative; z-index:1; }
+
+    /* ═══════════════════════════════════════════════ TOPBAR */
+    .topbar {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0 44px; height:64px;
+      background: var(--bg-topbar);
+      backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid var(--border);
+      position:sticky; top:0; z-index:100;
+      transition: background var(--transition), border-color var(--transition);
+    }
+    .topbar-left { display:flex; align-items:center; gap:14px; }
+    .logo {
+      display:flex; align-items:center; gap:10px;
+      font-family:'Syne',sans-serif; font-size:17px; font-weight:800;
+      color: var(--accent); letter-spacing:-0.3px;
+      transition: color var(--transition);
+    }
+    .logo-box {
+      width:32px; height:32px; border-radius:9px;
+      background: var(--accent);
+      display:grid; place-items:center;
+      box-shadow: 0 0 18px var(--accent-glow);
+      transition: background var(--transition), box-shadow var(--transition);
+    }
+    .logo-box svg { width:18px; height:18px; color:white; }
+    .ver-tag {
+      font-family:'DM Mono',monospace; font-size:10px; font-weight:500;
+      color: var(--text-muted); background: var(--border);
+      padding:3px 8px; border-radius:20px; letter-spacing:0.5px;
+      transition: all var(--transition);
+    }
+    .topbar-right { display:flex; align-items:center; gap:14px; }
+    .status-pill {
+      display:flex; align-items:center; gap:6px;
+      padding:6px 14px; border-radius:20px;
+      background: var(--pill-bg); border:1px solid var(--pill-border);
+      font-size:11px; font-weight:600; color: var(--pill-text);
+      letter-spacing:0.3px;
+      transition: all var(--transition);
+    }
+    .status-pill .dot {
+      width:6px; height:6px; border-radius:50%;
+      background: var(--pill-dot); box-shadow:0 0 6px var(--pill-dot);
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.85)} }
+
+    /* ═══════════════════════════════════════════════
+       THEME TOGGLE ★
+    ═══════════════════════════════════════════════ */
+    .theme-toggle {
+      position:relative; width:66px; height:34px;
+      cursor:pointer; -webkit-tap-highlight-color:transparent;
+      user-select:none;
+    }
+    .theme-toggle input { opacity:0; width:0; height:0; position:absolute; }
+
+    /* track */
+    .tt-track {
+      position:absolute; inset:0; border-radius:999px;
+      background: var(--track); border:1.5px solid var(--track-border);
+      transition: background var(--transition), border-color var(--transition);
+      overflow:hidden;
+    }
+    /* dark-mode star dots */
+    .tt-track::before {
+      content:'';
+      position:absolute; inset:0;
+      background:
+        radial-gradient(circle, rgba(255,255,255,0.95) 1px, transparent 1px) 10px 9px / 5px 5px,
+        radial-gradient(circle, rgba(255,255,255,0.6) 1px, transparent 1px) 30px 16px / 4px 4px,
+        radial-gradient(circle, rgba(255,255,255,0.8) 1px, transparent 1px) 20px 22px / 3px 3px,
+        radial-gradient(circle, rgba(255,255,255,0.5) 1px, transparent 1px) 48px 11px / 3px 3px;
+      opacity:0; transition: opacity var(--transition);
+    }
+    [data-theme="dark"] .tt-track::before { opacity:1; }
+    /* light-mode sunny wash */
+    .tt-track::after {
+      content:'';
+      position:absolute; inset:0;
+      background:linear-gradient(135deg, rgba(255,210,60,0.18) 0%, rgba(255,140,0,0.12) 100%);
+      opacity:0; transition: opacity var(--transition);
+    }
+    [data-theme="light"] .tt-track::after { opacity:1; }
+
+    /* knob */
+    .tt-knob {
+      position:absolute; top:4px; left:4px;
+      width:24px; height:24px; border-radius:50%;
+      background: var(--knob-bg);
+      box-shadow:0 2px 8px rgba(0,0,0,0.3);
+      transition: transform var(--transition), background var(--transition), box-shadow var(--transition);
+      display:grid; place-items:center; overflow:hidden;
+    }
+    [data-theme="light"] .tt-knob {
+      transform:translateX(32px);
+      box-shadow:0 2px 8px rgba(0,0,0,0.12), 0 0 10px rgba(255,190,0,0.35);
+    }
+    .kicon {
+      position:absolute; font-size:13px; line-height:1;
+      transition: opacity 0.22s ease, transform 0.28s ease;
+    }
+    .k-moon { opacity:1; transform:scale(1) rotate(0deg); }
+    .k-sun  { opacity:0; transform:scale(0.5) rotate(90deg); }
+    [data-theme="light"] .k-moon { opacity:0; transform:scale(0.5) rotate(-90deg); }
+    [data-theme="light"] .k-sun  { opacity:1; transform:scale(1) rotate(0deg); }
+
+    /* tooltip */
+    .theme-toggle-wrap { position:relative; }
+    .theme-toggle-wrap .tt-tip {
+      position:absolute; top:calc(100% + 9px); left:50%;
+      transform:translateX(-50%);
+      background:var(--bg-card); border:1px solid var(--border);
+      color:var(--text-secondary); font-size:10px; font-weight:500;
+      padding:4px 10px; border-radius:6px; white-space:nowrap;
+      opacity:0; pointer-events:none; transition:opacity 0.18s;
+      backdrop-filter:blur(12px); font-family:'DM Mono',monospace;
+    }
+    .theme-toggle-wrap:hover .tt-tip { opacity:1; }
+
+    /* ═══════════════════════════════════════════════ HERO */
+    .hero { text-align:center; padding:44px 20px 20px; }
+    .hero-eyebrow {
+      font-family:'DM Mono',monospace; font-size:10px; font-weight:500;
+      text-transform:uppercase; letter-spacing:3px; color:var(--accent);
+      margin-bottom:10px; opacity:0.8; transition:color var(--transition);
+    }
+    .hero h1 {
+      font-family:'Syne',sans-serif; font-size:38px; font-weight:800;
+      letter-spacing:-1.5px; line-height:1;
+      background:linear-gradient(135deg, var(--accent) 0%, var(--accent-blue) 100%);
+      -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+      background-clip:text; margin-bottom:10px;
+      animation:heroIn 0.6s cubic-bezier(0.2,0,0,1) both;
+    }
+    @keyframes heroIn { from{opacity:0;transform:translateY(12px) scale(0.97)} to{opacity:1;transform:none} }
+    .hero p { color:var(--text-secondary); font-size:13px; max-width:500px; margin:0 auto; line-height:1.65; transition:color var(--transition); }
+
+    /* ═══════════════════════════════════════════════ PIPELINE VIZ */
+    .pipeline-visual {
+      display:flex; align-items:center; justify-content:center;
+      gap:0; margin:26px auto 32px; max-width:560px;
+    }
+    .pv-node { display:flex; flex-direction:column; align-items:center; gap:8px; }
+    .pv-icon {
+      width:54px; height:54px; border-radius:16px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:22px; border:1px solid var(--border);
+      backdrop-filter:blur(8px);
+      transition:transform 0.3s, box-shadow 0.3s, border-color var(--transition);
+      cursor:default;
+    }
+    .pv-icon:hover { transform:translateY(-4px) scale(1.06); }
+    .pv-icon.mongo { background:linear-gradient(135deg,rgba(77,179,61,.2),rgba(58,154,46,.1)); box-shadow:0 4px 18px rgba(77,179,61,.14); }
+    .pv-icon.mongo:hover { box-shadow:0 10px 30px rgba(77,179,61,.3); }
+    .pv-icon.click { background:linear-gradient(135deg,rgba(250,219,20,.2),rgba(212,184,0,.1)); box-shadow:0 4px 18px rgba(250,219,20,.1); }
+    .pv-icon.click:hover { box-shadow:0 10px 30px rgba(250,219,20,.25); }
+    .pv-icon.mysql { background:linear-gradient(135deg,rgba(0,117,143,.2),rgba(0,95,115,.1)); box-shadow:0 4px 18px rgba(0,117,143,.14); }
+    .pv-icon.mysql:hover { box-shadow:0 10px 30px rgba(0,117,143,.3); }
+    .pv-label {
+      font-family:'DM Mono',monospace; font-size:10px;
+      color:var(--text-muted); font-weight:500; text-transform:uppercase; letter-spacing:0.8px;
+      transition:color var(--transition);
+    }
+    .pv-connector { display:flex; flex-direction:column; align-items:center; gap:4px; margin:0 8px; margin-bottom:20px; }
+    .pv-stage-tag {
+      font-family:'DM Mono',monospace; font-size:8px; font-weight:500;
+      text-transform:uppercase; letter-spacing:1.5px; color:var(--accent);
+      transition:color var(--transition);
+    }
+    .pv-line { width:64px; height:1.5px; background:linear-gradient(90deg,var(--accent),var(--accent-blue)); position:relative; }
+    .pv-line::after {
+      content:''; position:absolute; right:-5px; top:50%; transform:translateY(-50%);
+      border:5px solid transparent; border-left-color:var(--accent-blue); border-right:none;
+    }
+
+    /* ═══════════════════════════════════════════════ GRID */
+    .main {
+      max-width:900px; margin:0 auto; padding:0 24px 80px;
+      display:grid; grid-template-columns:1fr 1fr; gap:14px;
+    }
+
+    /* ═══════════════════════════════════════════════ CARDS */
+    .card {
+      background:var(--bg-card); backdrop-filter:blur(16px) saturate(160%);
+      border:1px solid var(--border); border-radius:16px;
+      padding:22px; box-shadow:var(--shadow);
+      transition:background var(--transition), border-color var(--transition),
+                 box-shadow var(--transition), transform 0.2s;
+      animation:fadeUp 0.5s ease both;
+    }
+    .card:hover { border-color:var(--border-hover); transform:translateY(-1px); }
+    .card.full-width { grid-column:1/-1; }
+    .card:nth-child(1){animation-delay:.04s} .card:nth-child(2){animation-delay:.09s}
+    .card:nth-child(3){animation-delay:.14s} .card:nth-child(4){animation-delay:.19s}
+    .card:nth-child(5){animation-delay:.24s} .card:nth-child(6){animation-delay:.29s}
+    @keyframes fadeUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+
+    .card-header { display:flex; align-items:center; gap:8px; margin-bottom:16px; }
+    .card-icon { font-size:16px; line-height:1; }
+    .card-title {
+      font-family:'Syne',sans-serif; font-size:11px;
+      text-transform:uppercase; letter-spacing:1.5px; color:var(--accent-blue);
+      font-weight:700; flex:1; transition:color var(--transition);
+    }
+    .stage-badge {
+      display:inline-flex; align-items:center;
+      padding:3px 10px; border-radius:20px;
+      font-family:'DM Mono',monospace; font-size:9px; font-weight:500;
+      letter-spacing:0.8px; text-transform:uppercase;
+    }
+    .s1 { background:var(--badge-s1-bg); color:var(--badge-s1-text); }
+    .s2 { background:var(--badge-s2-bg); color:var(--badge-s2-text); }
+    .opt { background:var(--badge-opt-bg); color:var(--badge-opt-text); }
+
+    /* ═══════════════════════════════════════════════ SCOPE TOGGLE */
+    .toggle-group {
+      display:flex; gap:6px;
+      background:var(--track); border:1px solid var(--track-border);
+      padding:4px; border-radius:12px;
+      transition:background var(--transition), border-color var(--transition);
+    }
+    .toggle-btn {
+      flex:1; padding:9px 8px; border:none; border-radius:9px;
+      background:transparent; color:var(--text-secondary); cursor:pointer;
+      font-size:12px; font-weight:500; font-family:'DM Sans',sans-serif;
+      transition:all 0.22s; text-align:center;
+    }
+    .toggle-btn:hover { color:var(--text-primary); background:var(--border); }
+    .toggle-btn.active { background:var(--accent); color:white; font-weight:600; box-shadow:0 2px 8px var(--accent-glow); }
+
+    /* ═══════════════════════════════════════════════ INPUTS */
+    .input-group { margin-top:12px; }
+    .input-group.hidden { display:none; }
+    .input-group label {
+      display:block; font-size:11px; color:var(--text-secondary);
+      margin-bottom:5px; font-weight:500; letter-spacing:0.3px;
+      transition:color var(--transition);
+    }
+    .input-group input, .input-group select {
+      width:100%; padding:10px 13px;
+      border:1.5px solid var(--border); border-radius:10px;
+      background:var(--bg-input); color:var(--text-input);
+      font-size:13px; font-family:'DM Sans',sans-serif;
+      transition:border-color 0.2s, background var(--transition), color var(--transition), box-shadow 0.2s;
+    }
+    .input-group input:focus, .input-group select:focus {
+      outline:none; border-color:var(--border-focus);
+      box-shadow:0 0 0 3px var(--accent-glow);
+    }
+    .input-group input::placeholder { color:var(--text-placeholder); }
+    .input-row   { display:grid; grid-template-columns:1fr 1fr;      gap:10px; }
+    .input-row-3 { display:grid; grid-template-columns:2fr 1fr 1fr;  gap:10px; }
+    .section-divider { border:none; border-top:1px solid var(--border); margin:16px 0; transition:border-color var(--transition); }
+    .hint { font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.5; transition:color var(--transition); }
+    .hidden { display:none !important; }
+
+    /* inline fetch btn */
+    .fetch-btn {
+      flex:0 0 auto; padding:10px 16px; white-space:nowrap;
+      border:1.5px solid var(--border); border-radius:10px;
+      background:var(--bg-input); color:var(--text-secondary); cursor:pointer;
+      font-size:12px; font-weight:500; font-family:'DM Sans',sans-serif;
+      transition:all 0.2s;
+    }
+    .fetch-btn:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-glow); }
+    .fetch-btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+    /* webhook row */
+    .webhook-row { display:flex; align-items:center; gap:8px; margin-top:10px; }
+    .label-tag {
+      font-family:'DM Mono',monospace; font-size:9px; font-weight:500;
+      text-transform:uppercase; letter-spacing:0.8px;
+      padding:3px 9px; border-radius:6px; white-space:nowrap;
+    }
+    .label-tag.p1 { background:var(--badge-s1-bg); color:var(--badge-s1-text); }
+    .label-tag.p2 { background:var(--badge-s2-bg); color:var(--badge-s2-text); }
+    .webhook-row input {
+      flex:1; padding:8px 11px; border:1px solid var(--border); border-radius:8px;
+      background:var(--bg-input); color:var(--text-secondary);
+      font-size:11px; font-family:'DM Mono',monospace;
+      transition:border-color 0.2s, background var(--transition), color var(--transition);
+    }
+    .webhook-row input:focus { outline:none; border-color:var(--accent-blue); }
+
+    /* ═══════════════════════════════════════════════ BUTTONS */
+    .action-area { grid-column:1/-1; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; padding:6px 0; }
+    .btn {
+      display:inline-flex; align-items:center; gap:8px;
+      padding:14px 28px; border:none; border-radius:12px;
+      font-family:'Syne',sans-serif; font-size:13px; font-weight:700; letter-spacing:0.3px;
+      cursor:pointer; color:white; position:relative; overflow:hidden;
+      transition:transform 0.2s, box-shadow 0.2s, filter 0.2s;
+    }
+    .btn::before { content:''; position:absolute; inset:0; background:rgba(255,255,255,0.08); opacity:0; transition:opacity 0.2s; }
+    .btn:hover::before { opacity:1; }
+    .btn:hover { transform:translateY(-2px); }
+    .btn:active { transform:translateY(0); filter:brightness(0.92); }
+    .btn:disabled { opacity:0.55; cursor:not-allowed; transform:none; filter:none; }
+    .btn-insert  { background:linear-gradient(135deg,#4db33d,#3a9a2e); box-shadow:0 4px 18px rgba(77,179,61,.3); }
+    .btn-insert:hover  { box-shadow:0 6px 28px rgba(77,179,61,.45); }
+    .btn-update  { background:linear-gradient(135deg,#ff6b35,#ff8c5a); box-shadow:0 4px 18px rgba(255,107,53,.3); }
+    .btn-update:hover  { box-shadow:0 6px 28px rgba(255,107,53,.45); }
+    .btn-syntheta { background:linear-gradient(135deg,#00758f,#005f73); box-shadow:0 4px 18px rgba(0,117,143,.3); }
+    .btn-syntheta:hover { box-shadow:0 6px 28px rgba(0,117,143,.45); }
+
+    /* union buttons */
+    .union-actions { display:flex; gap:8px; margin-top:14px; justify-content:center; }
+    .btn-sm {
+      display:inline-flex; align-items:center; gap:6px;
+      padding:10px 22px; border:none; border-radius:10px;
+      font-family:'Syne',sans-serif; font-size:12px; font-weight:700;
+      cursor:pointer; color:white;
+      transition:transform 0.2s, box-shadow 0.2s; position:relative; overflow:hidden;
+    }
+    .btn-sm:hover { transform:translateY(-2px); }
+    .btn-sm:disabled { opacity:0.55; cursor:not-allowed; transform:none; }
+    .btn-create  { background:linear-gradient(135deg,#ff6b35,#ff8c5a); box-shadow:0 3px 14px rgba(255,107,53,.28); }
+    .btn-refresh { background:linear-gradient(135deg,#53c0f0,#3a9ad9); box-shadow:0 3px 14px rgba(83,192,240,.28); }
+
+    /* spinner */
+    .spinner {
+      width:14px; height:14px; border:2px solid rgba(255,255,255,.3);
+      border-top-color:white; border-radius:50%;
+      animation:spin 0.6s linear infinite; display:none; flex-shrink:0;
+    }
+    .btn.loading .spinner, .btn-sm.loading .spinner { display:block; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+
+    /* ═══════════════════════════════════════════════ LOG */
+    .status-log { grid-column:1/-1; max-height:0; overflow:hidden; transition:max-height 0.4s cubic-bezier(0.4,0,0.2,1); }
+    .status-log.visible { max-height:360px; overflow-y:auto; }
+    .status-log::-webkit-scrollbar { width:4px; }
+    .status-log::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+    .log-card {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:16px; padding:18px; backdrop-filter:blur(16px);
+      box-shadow:var(--shadow);
+      transition:background var(--transition), border-color var(--transition);
+    }
+    .log-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .log-title { font-family:'DM Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:2px; color:var(--text-muted); transition:color var(--transition); }
+    .log-clear { font-size:10px; color:var(--text-muted); cursor:pointer; background:none; border:none; font-family:'DM Mono',monospace; transition:color 0.2s; }
+    .log-clear:hover { color:var(--accent); }
+    .log-entry {
+      padding:8px 12px; border-radius:8px; font-size:12px; margin-bottom:5px;
+      display:flex; align-items:flex-start; gap:8px;
+      font-family:'DM Mono',monospace; line-height:1.4;
+    }
+    .log-ico { font-size:13px; flex-shrink:0; margin-top:1px; }
+    .log-entry.success { background:rgba(46,204,113,.08); color:#2ecc71; }
+    .log-entry.error   { background:rgba(231,76,60,.08);  color:#e74c3c; }
+    .log-entry.loading { background:var(--accent-blue-glow); color:var(--accent-blue); }
+    .log-entry.info    { background:rgba(128,128,128,.05); color:var(--text-muted); }
+
+    /* ═══════════════════════════════════════════════ RESPONSIVE */
+    @media (max-width:700px) {
+      .main { grid-template-columns:1fr; }
+      .hero h1 { font-size:28px; }
+      .topbar { padding:0 18px; }
+      .pipeline-visual { flex-wrap:wrap; gap:8px; }
+      .input-row, .input-row-3 { grid-template-columns:1fr; }
+      .action-area, .union-actions { flex-direction:column; align-items:center; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <div class="logo">
+        <div class="logo-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        Syntheta DataSync
+      </div>
+      <span class="ver-tag">v2.0</span>
+    </div>
+
+    <div class="topbar-right">
+      <div class="status-pill">
+        <span class="dot"></span>
+        2-Stage Pipeline
+      </div>
+
+      <!-- ★ THEME TOGGLE ★ -->
+      <div class="theme-toggle-wrap">
+        <label class="theme-toggle" id="themeToggle">
+          <input type="checkbox" id="themeCheckbox" onchange="toggleTheme(this)">
+          <span class="tt-track"></span>
+          <span class="tt-knob">
+            <span class="kicon k-moon">🌙</span>
+            <span class="kicon k-sun">☀️</span>
+          </span>
+        </label>
+        <span class="tt-tip" id="themeTooltip">Switch to light</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- HERO -->
+  <div class="hero">
+    <p class="hero-eyebrow">ETL · 2-Stage · Real-Time</p>
+    <h1>DataBridge</h1>
+    <p>Stage 1: MongoDB → ClickHouse (insert or update). Stage 2: ClickHouse → Syntheta (manual trigger only).</p>
+  </div>
+
+  <!-- PIPELINE VISUAL -->
+  <div class="pipeline-visual">
+    <div class="pv-node">
+      <div class="pv-icon mongo">🍃</div>
+      <span class="pv-label">MongoDB</span>
+    </div>
+    <div class="pv-connector">
+      <span class="pv-stage-tag">Stage 1</span>
+      <div class="pv-line"></div>
+    </div>
+    <div class="pv-node">
+      <div class="pv-icon click">⚡</div>
+      <span class="pv-label">ClickHouse</span>
+    </div>
+    <div class="pv-connector">
+      <span class="pv-stage-tag">Stage 2</span>
+      <div class="pv-line"></div>
+    </div>
+    <div class="pv-node">
+      <div class="pv-icon mysql">🐬</div>
+      <span class="pv-label">Syntheta</span>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main">
+
+    <!-- Stage 1: MongoDB Source -->
+    <div class="card full-width">
+      <div class="card-header">
+        <span class="card-icon">🍃</span>
+        <span class="card-title">Source — MongoDB</span>
+        <span class="stage-badge s1">Stage 1</span>
+      </div>
+      <div class="input-row-3">
+        <div class="input-group"><label>Host / URL</label><input type="text" id="mongo-host" placeholder="e.g. localhost or mongodb+srv://..."></div>
+        <div class="input-group"><label>Port</label><input type="number" id="mongo-port" placeholder="27017" value="27017"></div>
+        <div class="input-group"><label>Auth Database</label><input type="text" id="mongo-auth-db" placeholder="admin" value="admin"></div>
+      </div>
+      <div class="input-row">
+        <div class="input-group"><label>Username (optional)</label><input type="text" id="mongo-user" placeholder="Leave empty if no auth"></div>
+        <div class="input-group"><label>Password (optional)</label><input type="password" id="mongo-password" placeholder="Leave empty if no auth"></div>
+      </div>
+      <div class="input-group"><label>Database Name</label><input type="text" id="mongo-database" placeholder="e.g. my_app_db"></div>
+      <hr class="section-divider">
+      <div class="card-header" style="margin-bottom:10px">
+        <span class="card-icon">📦</span>
+        <span class="card-title">Sync Scope</span>
+      </div>
+      <div class="toggle-group">
+        <button class="toggle-btn active" onclick="setScope('database')" id="scope-db">Entire Database</button>
+        <button class="toggle-btn" onclick="setScope('collection')" id="scope-coll">Single Collection</button>
+      </div>
+      <div class="input-group" id="collections-input">
+        <label>Collection Names</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="collectionsAll" placeholder="Click 'Fetch' or enter: sample_data, customers" style="flex:1">
+          <button class="fetch-btn" onclick="fetchCollections()" id="btn-fetch-collections">Fetch</button>
+        </div>
+        <p class="hint">Click "Fetch" to auto-discover collections from MongoDB, or enter them manually (comma-separated).</p>
+      </div>
+      <div class="input-group hidden" id="collection-input">
+        <label>Collection Name</label>
+        <input type="text" id="collectionName" placeholder="e.g. users, orders, products">
+      </div>
+    </div>
+
+    <!-- Stage 1: ClickHouse Destination -->
+    <div class="card full-width">
+      <div class="card-header">
+        <span class="card-icon">⚡</span>
+        <span class="card-title">Destination — ClickHouse</span>
+        <span class="stage-badge s1">Stage 1</span>
+      </div>
+      <div class="input-row" id="ch-host-row">
+        <div class="input-group"><label>Host</label><input type="text" id="ch-host" placeholder="e.g. 34.93.96.87" value="localhost"></div>
+        <div class="input-group"><label>HTTP Port</label><input type="number" id="ch-port" placeholder="8123" value="8123"></div>
+      </div>
+      <div class="input-group" id="ch-database-group">
+        <label>Database</label>
+        <input type="text" id="ch-database" placeholder="e.g. Syntheta_logs" value="Syntheta_logs">
+      </div>
+      <p class="hint" id="ch-db-hint-auto" style="display:none;margin-top:6px">For "Entire Database" mode, the ClickHouse database name is auto-set from the MongoDB database name.</p>
+      <div class="input-row">
+        <div class="input-group"><label>Username</label><input type="text" id="ch-user" placeholder="e.g. admin" value="admin"></div>
+        <div class="input-group"><label>Password</label><input type="password" id="ch-password" placeholder="ClickHouse password"></div>
+      </div>
+    </div>
+
+    <!-- Stage 2: Send to Syntheta -->
+    <div class="card full-width">
+      <div class="card-header">
+        <span class="card-icon">🐬</span>
+        <span class="card-title">Send to Syntheta</span>
+        <span class="stage-badge s2">Stage 2 — Manual</span>
+      </div>
+      <p class="hint" style="margin-bottom:12px">Stage 2 reads from ClickHouse and writes to Syntheta. It only runs when you click "Send to Syntheta".</p>
+      <div class="input-group">
+        <label>ClickHouse Database to Send</label>
+        <input type="text" id="syn-ch-database" placeholder="e.g. syntheta_source" value="">
+        <p class="hint">The ClickHouse database created by Stage 1. Same as your MongoDB database name if you used "Entire Database" mode.</p>
+      </div>
+      <hr class="section-divider">
+      <div class="input-group">
+        <label>Connection ID</label>
+        <input type="number" id="syn-connection-id" placeholder="0 = internal MySQL" value="0">
+      </div>
+      <p class="hint">0 = Syntheta's internal MySQL. All tables from the ClickHouse database sync to this connection. Database is created automatically.</p>
+    </div>
+
+    <!-- Union Table -->
+    <div class="card full-width">
+      <div class="card-header">
+        <span class="card-icon">🔗</span>
+        <span class="card-title">Union Table — ClickHouse</span>
+        <span class="stage-badge opt">Optional</span>
+      </div>
+      <p class="hint" style="margin-bottom:12px">Combine multiple ClickHouse tables into one using ReplacingMergeTree. No data is deleted — latest rows replace old ones.</p>
+      <div class="input-row">
+        <div class="input-group"><label>ClickHouse Database</label><input type="text" id="union-database" placeholder="e.g. syntheta_source"></div>
+        <div class="input-group"><label>Union Table Name</label><input type="text" id="union-table-name" placeholder="e.g. kanban"></div>
+      </div>
+      <div class="input-group"><label>Primary Key Column</label><input type="text" id="union-primary-key" placeholder="e.g. Trans_Unique_Id or col_id"></div>
+      <div class="input-group">
+        <label>Source Tables</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="union-source-tables" placeholder="Click 'Fetch Tables' or enter: table1, table2, table3" style="flex:1">
+          <button class="fetch-btn" onclick="fetchChTables()" id="btn-fetch-ch-tables">Fetch Tables</button>
+        </div>
+        <p class="hint">Comma-separated list of tables to combine.</p>
+      </div>
+      <div class="union-actions">
+        <button class="btn-sm btn-create" id="btn-create-union" onclick="createOrRefreshUnion('create')">
+          <span class="spinner"></span> Create Union Table
+        </button>
+        <button class="btn-sm btn-refresh" id="btn-refresh-union" onclick="createOrRefreshUnion('refresh')">
+          <span class="spinner"></span> Refresh Union Table
+        </button>
+      </div>
+    </div>
+
+    <!-- Webhook config -->
+    <div class="card full-width">
+      <div class="card-header" style="cursor:pointer;margin-bottom:0" onclick="document.getElementById('webhook-details').classList.toggle('hidden')">
+        <span class="card-icon">🔗</span>
+        <span class="card-title">Webhook Endpoints</span>
+        <span style="font-size:11px;color:var(--text-muted);font-family:'DM Mono',monospace;letter-spacing:0.5px">click to edit ↕</span>
+      </div>
+      <div id="webhook-details" class="hidden" style="margin-top:12px">
+        <div class="webhook-row"><span class="label-tag p1">S1</span><input type="text" id="webhook-p1" value="http://localhost:5678/webhook/pipeline1"></div>
+        <div class="webhook-row"><span class="label-tag p2">S2</span><input type="text" id="webhook-p2" value="http://localhost:5678/webhook/pipeline2"></div>
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="action-area">
+      <button class="btn btn-insert" id="btn-insert" onclick="triggerStage1('insert')">
+        <span class="spinner"></span> Sync to ClickHouse
+      </button>
+      <button class="btn btn-update" id="btn-update" onclick="triggerStage1('update')">
+        <span class="spinner"></span> Update Data
+      </button>
+      <button class="btn btn-syntheta" id="btn-syntheta" onclick="triggerStage2()">
+        <span class="spinner"></span> Send to Syntheta
+      </button>
+    </div>
+
+    <!-- Status log -->
+    <div class="status-log" id="status-log">
+      <div class="log-card">
+        <div class="log-header">
+          <span class="log-title">Sync Log</span>
+          <button class="log-clear" onclick="clearLog()">clear</button>
+        </div>
+        <div id="log-entries"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  /* ─── Theme Toggle ─────────────────────────────────────── */
+  function toggleTheme(cb) {
+    const t = cb.checked ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+    document.getElementById('themeTooltip').textContent =
+      t === 'dark' ? 'Switch to light' : 'Switch to dark';
+    localStorage.setItem('syntheta-theme', t);
+  }
+
+  // Restore on load
+  (function() {
+    const saved = localStorage.getItem('syntheta-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+    if (saved === 'light') document.getElementById('themeCheckbox').checked = true;
+    document.getElementById('themeTooltip').textContent =
+      saved === 'dark' ? 'Switch to light' : 'Switch to dark';
+  })();
+
+  /* ─── Sync scope ─────────────────────────────────────── */
+  let syncScope = 'database';
+
+  function setScope(mode) {
+    syncScope = mode;
+    document.getElementById('scope-db').classList.toggle('active', mode === 'database');
+    document.getElementById('scope-coll').classList.toggle('active', mode === 'collection');
+    document.getElementById('collections-input').style.display = mode === 'database' ? 'block' : 'none';
+    document.getElementById('collection-input').classList.toggle('hidden', mode !== 'collection');
+    document.getElementById('ch-database-group').style.display = mode === 'database' ? 'none' : 'block';
+    document.getElementById('ch-db-hint-auto').style.display = mode === 'database' ? 'block' : 'none';
+  }
+  setScope('database');
+
+  /* ─── Helpers ─────────────────────────────────────────── */
+  function getVal(id) { return document.getElementById(id).value.trim(); }
+
+  function addLog(msg, type) {
+    const icons = { success:'✅', error:'❌', loading:'⏳', info:'ℹ️' };
+    const el = document.getElementById('log-entries');
+    const e = document.createElement('div');
+    e.className = 'log-entry ' + type;
+    e.innerHTML = '<span class="log-ico">' + (icons[type] || '') + '</span><span>' + msg + '</span>';
+    el.prepend(e);
+    document.getElementById('status-log').classList.add('visible');
+  }
+  function clearLog() {
+    document.getElementById('log-entries').innerHTML = '';
+    document.getElementById('status-log').classList.remove('visible');
+  }
+
+  function buildMongoSource() {
+    const host = getVal('mongo-host'), database = getVal('mongo-database');
+    if (!host || !database) throw new Error('MongoDB host and database name are required.');
+    return { type:'mongodb', host, port:parseInt(getVal('mongo-port'))||27017,
+      user:getVal('mongo-user')||null, password:getVal('mongo-password')||null,
+      database, authDb:getVal('mongo-auth-db')||'admin' };
+  }
+
+  function buildClickhouse() {
+    const chDatabase = syncScope === 'database'
+      ? getVal('mongo-database')
+      : (getVal('ch-database') || 'Syntheta_logs');
+    return { host:getVal('ch-host')||'localhost', port:parseInt(getVal('ch-port'))||8123,
+      database:chDatabase||getVal('mongo-database'), user:getVal('ch-user')||'admin',
+      password:getVal('ch-password')||'' };
+  }
+
+  async function callWebhook(url, payload) {
+    addLog('Sending to: ' + url, 'info');
+    addLog('Payload: ' + JSON.stringify(payload).substring(0,300) + '…', 'info');
+    let resp;
+    try {
+      resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    } catch(e) { throw new Error('Network error — is n8n running? ' + e.message); }
+    addLog('Status: ' + resp.status + ' ' + resp.statusText, 'info');
+    const text = await resp.text();
+    addLog('Body (' + text.length + ' chars): ' + (text.substring(0,500)||'(empty)'), 'info');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ': ' + (text||'empty'));
+    if (!text || !text.trim()) throw new Error('Workflow returned empty response — check n8n executions tab.');
+    try { return JSON.parse(text); } catch(e) { throw new Error('Non-JSON: ' + text.substring(0,300)); }
+  }
+
+  /* ─── Fetch MongoDB Collections ───────────────────────── */
+  async function fetchCollections() {
+    const btn = document.getElementById('btn-fetch-collections');
+    btn.disabled = true; btn.textContent = '…';
+    try {
+      const host = getVal('mongo-host'), database = getVal('mongo-database');
+      if (!host || !database) throw new Error('Enter MongoDB host and database name first.');
+      const resp = await fetch('/api/mongo/list-collections', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ host, port:parseInt(getVal('mongo-port'))||27017, database,
+          user:getVal('mongo-user')||null, password:getVal('mongo-password')||null,
+          authDb:getVal('mongo-auth-db')||'admin' })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      if (data.collections?.length > 0) {
+        document.getElementById('collectionsAll').value = data.collections.join(', ');
+        addLog('Found ' + data.collections.length + ' collections: ' + data.collections.join(', '), 'success');
+      } else throw new Error('No collections found in "' + database + '".');
+    } catch(e) { addLog('Fetch failed: ' + e.message, 'error'); }
+    btn.disabled = false; btn.textContent = 'Fetch';
+  }
+
+  /* ─── Fetch ClickHouse Tables ─────────────────────────── */
+  async function fetchChTables() {
+    const btn = document.getElementById('btn-fetch-ch-tables');
+    btn.disabled = true; btn.textContent = '…';
+    try {
+      const database = getVal('union-database');
+      if (!database) throw new Error('Enter ClickHouse database name first.');
+      const resp = await fetch('/api/clickhouse/list-tables', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ chHost:getVal('ch-host')||'localhost', chPort:parseInt(getVal('ch-port'))||8123,
+          chUser:getVal('ch-user')||'admin', chPassword:getVal('ch-password')||'', database })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      if (data.tables?.length > 0) {
+        document.getElementById('union-source-tables').value = data.tables.join(', ');
+        addLog('Found ' + data.tables.length + ' tables: ' + data.tables.join(', '), 'success');
+      } else throw new Error('No tables found in "' + database + '".');
+    } catch(e) { addLog('Fetch tables failed: ' + e.message, 'error'); }
+    btn.disabled = false; btn.textContent = 'Fetch Tables';
+  }
+
+  /* ─── Union Table ─────────────────────────────────────── */
+  async function createOrRefreshUnion(action) {
+    const btn = document.getElementById(action === 'create' ? 'btn-create-union' : 'btn-refresh-union');
+    btn.disabled = true; btn.classList.add('loading'); clearLog();
+    try {
+      const database = getVal('union-database'), unionTableName = getVal('union-table-name');
+      const primaryKey = getVal('union-primary-key'), sourceTablesStr = getVal('union-source-tables');
+      if (!database) throw new Error('Enter ClickHouse database name.');
+      if (!unionTableName) throw new Error('Enter union table name.');
+      if (!primaryKey) throw new Error('Enter primary key column.');
+      if (!sourceTablesStr) throw new Error('Enter source tables.');
+      const sourceTables = sourceTablesStr.split(',').map(t=>t.trim()).filter(t=>t);
+      if (sourceTables.length < 2) throw new Error('At least 2 source tables required.');
+      addLog('Union: ' + action + 'ing "' + unionTableName + '" from ' + sourceTables.length + ' tables…', 'loading');
+      const resp = await fetch('/api/clickhouse/create-union', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ chHost:getVal('ch-host')||'localhost', chPort:parseInt(getVal('ch-port'))||8123,
+          chUser:getVal('ch-user')||'admin', chPassword:getVal('ch-password')||'',
+          database, unionTableName, sourceTables, primaryKey })
+      });
+      const data = await resp.json();
+      if (data.status === 'error') throw new Error(data.message);
+      addLog('Union table "' + data.table + '" ' + data.action + ' — ' + data.rowCount + ' rows (deduplicated)', 'success');
+    } catch(e) { addLog('Union error: ' + e.message, 'error'); }
+    btn.disabled = false; btn.classList.remove('loading');
+  }
+
+  /* ─── Stage 1 ─────────────────────────────────────────── */
+  async function triggerStage1(mode) {
+    const btn = document.getElementById(mode === 'insert' ? 'btn-insert' : 'btn-update');
+    btn.disabled = true; btn.classList.add('loading'); clearLog();
+    try {
+      const source = buildMongoSource(), clickhouse = buildClickhouse();
+      const collection = syncScope === 'collection' ? getVal('collectionName') : null;
+      const collections = syncScope === 'database' ? getVal('collectionsAll') : null;
+      if (syncScope === 'collection' && !collection) throw new Error('Please enter a collection name.');
+      if (syncScope === 'database' && !collections) throw new Error('Please enter collection names (comma-separated).');
+      const label = mode === 'insert' ? 'INSERT' : 'UPDATE (truncate + insert)';
+      const scopeLabel = syncScope === 'database' ? 'entire database "' + source.database + '"' : 'collection "' + collection + '"';
+      addLog('Stage 1 [' + label + ']: Syncing ' + scopeLabel + ' → ClickHouse', 'loading');
+      const result = await callWebhook(getVal('webhook-p1'), {
+        source, syncMode:syncScope, collection,
+        collections: collections ? collections.split(',').map(c=>c.trim()).filter(c=>c) : null,
+        mode, clickhouse
+      });
+      addLog('Stage 1 done — ' + (result.recordsSynced || result.collectionsProcessed + ' collections' || '?') + ' synced (mode: ' + mode + ')', 'success');
+      document.getElementById('syn-ch-database').value = clickhouse.database;
+    } catch(e) { addLog('Stage 1 error: ' + e.message, 'error'); }
+    btn.disabled = false; btn.classList.remove('loading');
+  }
+
+  /* ─── Stage 2 ─────────────────────────────────────────── */
+  async function triggerStage2() {
+    const btn = document.getElementById('btn-syntheta');
+    btn.disabled = true; btn.classList.add('loading'); clearLog();
+    try {
+      const clickhouse = buildClickhouse();
+      const connectionId = parseInt(getVal('syn-connection-id')) || 0;
+      const synChDatabase = getVal('syn-ch-database');
+      if (!synChDatabase) throw new Error('Please enter the ClickHouse database name to send.');
+      const destLabel = connectionId === 0 ? 'internal MySQL' : 'connection #' + connectionId;
+      addLog('Stage 2: Sending "' + synChDatabase + '" → Syntheta (' + destLabel + ')', 'loading');
+      const result = await callWebhook(getVal('webhook-p2'), {
+        source:{ type:'clickhouse', host:clickhouse.host, port:clickhouse.port,
+          user:clickhouse.user, password:clickhouse.password, database:synChDatabase },
+        syncMode:'database',
+        destination:{ connection_id:connectionId, host:'localhost', port:3306,
+          user:'root', password:'welcome@123', database:'syntheta_db' }
+      });
+      addLog('Stage 2 done — ' + (result.recordsSynced || '?') + ' records → ' + (result.targetTable || 'Syntheta'), 'success');
+    } catch(e) { addLog('Stage 2 error: ' + e.message, 'error'); }
+    btn.disabled = false; btn.classList.remove('loading');
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+{
+  "name": "Stage 2: ClickHouse → Syntheta (Manual Trigger Only)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pipeline2",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-p2",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "pipeline2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\nconst src = body.source || {};\nif (!src.database) {\n  throw new Error('ClickHouse source database is required');\n}\nconst chHost = src.host || 'localhost';\nconst chPort = src.port || 8123;\nconst chUser = src.user || 'default';\nconst chPassword = src.password || '';\nconst chDatabase = src.database;\n\nconst dest = body.destination || {};\nconst connectionId = dest.connection_id !== undefined ? dest.connection_id : 0;\n\nconst synHost = dest.host || 'localhost';\nconst synPort = dest.port || 3306;\nconst synUser = dest.user || 'root';\nconst synPassword = dest.password || '';\nconst synDatabase = dest.database || 'syntheta_db';\n\nreturn [{\n  json: {\n    chHost, chPort, chUser, chPassword, chDatabase,\n    synHost, synPort, synUser, synPassword, synDatabase,\n    connectionId\n  }\n}];"
+      },
+      "id": "parse-request-p2",
+      "name": "Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://' + $json.chHost + ':' + $json.chPort + '/?user=' + encodeURIComponent($json.chUser) + '&password=' + encodeURIComponent($json.chPassword) + '&query=' + encodeURIComponent('SHOW TABLES FROM ' + $json.chDatabase + ' FORMAT JSON') }}",
+        "authentication": "none",
+        "options": { "timeout": 30000 }
+      },
+      "id": "ch-list-tables",
+      "name": "ClickHouse - List Tables",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $('Parse Request').first().json;\nconst response = $input.first().json;\n\nlet allTables = [];\nif (response.data) {\n  allTables = response.data.map(row => row.name);\n}\n\nif (allTables.length === 0) {\n  throw new Error('No tables found in ClickHouse database: ' + config.chDatabase);\n}\n\nreturn allTables.map(name => ({\n  json: {\n    tableName: name,\n    chHost: config.chHost, chPort: config.chPort,\n    chUser: config.chUser, chPassword: config.chPassword,\n    chDatabase: config.chDatabase,\n    synHost: config.synHost, synPort: config.synPort,\n    synUser: config.synUser, synPassword: config.synPassword,\n    synDatabase: config.synDatabase,\n    connectionId: config.connectionId\n  }\n}));"
+      },
+      "id": "build-table-list",
+      "name": "Build Table List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-tables",
+      "name": "Loop Over Tables",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nreturn [{ json: item }];"
+      },
+      "id": "current-table",
+      "name": "Current Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://' + $json.chHost + ':' + $json.chPort + '/?user=' + encodeURIComponent($json.chUser) + '&password=' + encodeURIComponent($json.chPassword) + '&database=' + encodeURIComponent($json.chDatabase) + '&query=' + encodeURIComponent('SELECT * FROM ' + $json.chDatabase + '.' + $json.tableName + ' FORMAT JSON') }}",
+        "authentication": "none",
+        "options": { "timeout": 900000 }
+      },
+      "id": "ch-read-data",
+      "name": "ClickHouse - Read Table Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst ctx = $('Current Table').first().json;\nconst tableName = ctx.tableName;\n\n// Always use CH database name as target, original table names (no prefix)\nconst targetDb = ctx.chDatabase;\nconst mysqlTable = tableName;\n\nlet rows = [];\nif (response.data) {\n  rows = response.data;\n} else if (Array.isArray(response)) {\n  rows = response;\n}\n\nif (rows.length === 0) {\n  return [{ json: { status: 'skipped', table: tableName, reason: 'no data', createDbSQL: 'SELECT 1', dropSQL: 'SELECT 1', createSQL: 'SELECT 1', insertSQL: 'SELECT 1' } }];\n}\n\nfunction inferMySQLType(value) {\n  if (value === null || value === undefined) return 'VARCHAR(500)';\n  if (typeof value === 'boolean') return 'TINYINT(1)';\n  if (typeof value === 'number') {\n    return Number.isInteger(value) ? 'INT' : 'DECIMAL(20,6)';\n  }\n  if (typeof value === 'string') {\n    if (/^\\d{4}-\\d{2}-\\d{2}(T|\\s)\\d{2}:\\d{2}/.test(value)) return 'DATETIME';\n    if (/^-?\\d+$/.test(value)) return 'INT';\n    if (/^-?\\d+\\.\\d+$/.test(value)) return 'DECIMAL(20,6)';\n    if (value.length > 500) return 'TEXT';\n    return 'VARCHAR(500)';\n  }\n  return 'TEXT';\n}\n\nfunction sanitizeValue(value, targetType) {\n  if (value === null || value === undefined) return null;\n  if (typeof value === 'number' && (isNaN(value) || !isFinite(value))) return null;\n  if (targetType === 'DATETIME' && typeof value === 'string') {\n    if (/^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(value)) return value;\n    const d = new Date(value);\n    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 19).replace('T', ' ');\n  }\n  return value;\n}\n\nfunction escapeSQL(val) {\n  if (val === null) return 'NULL';\n  if (typeof val === 'number') return String(val);\n  return \"'\" + String(val).replace(/'/g, \"''\") + \"'\";\n}\n\nconst sample = rows[0];\nconst columnDefs = [];\nconst colNames = [];\nconst schema = {};\nfor (const [key, value] of Object.entries(sample)) {\n  const mysqlType = inferMySQLType(value);\n  columnDefs.push('`' + key + '` ' + mysqlType);\n  colNames.push(key);\n  schema[key] = mysqlType;\n}\n\nconst fullTable = '`' + targetDb + '`.`' + mysqlTable + '`';\nconst createDbSQL = 'CREATE DATABASE IF NOT EXISTS `' + targetDb + '`';\nconst dropSQL = 'DROP TABLE IF EXISTS ' + fullTable;\nconst createSQL = 'CREATE TABLE ' + fullTable + ' (' + columnDefs.join(', ') + ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';\n\nconst valueRows = rows.map(row => {\n  const vals = colNames.map(col => escapeSQL(sanitizeValue(row[col], schema[col])));\n  return '(' + vals.join(',') + ')';\n});\nconst insertSQL = 'INSERT INTO ' + fullTable + ' (`' + colNames.join('`,`') + '`) VALUES ' + valueRows.join(',');\n\nreturn [{\n  json: {\n    createDbSQL, dropSQL, createSQL, insertSQL,\n    mysqlTable, tableName, targetDatabase: targetDb,\n    rowCount: rows.length\n  }\n}];"
+      },
+      "id": "map-types",
+      "name": "Parse & Map Types",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.createDbSQL }}",
+        "options": {}
+      },
+      "id": "mysql-create-db",
+      "name": "MySQL - Create Database",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.4,
+      "position": [1760, 0],
+      "credentials": {
+        "mySql": {
+          "id": "MYSQL_CREDENTIAL_ID",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Parse & Map Types').first().json.dropSQL }}",
+        "options": {}
+      },
+      "id": "mysql-drop-table",
+      "name": "MySQL - Drop Old Table",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.4,
+      "position": [1980, 0],
+      "credentials": {
+        "mySql": {
+          "id": "MYSQL_CREDENTIAL_ID",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Parse & Map Types').first().json.createSQL }}",
+        "options": {}
+      },
+      "id": "mysql-create-table",
+      "name": "MySQL - Create Table",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.4,
+      "position": [2200, 0],
+      "credentials": {
+        "mySql": {
+          "id": "MYSQL_CREDENTIAL_ID",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Parse & Map Types').first().json.insertSQL }}",
+        "options": {}
+      },
+      "id": "mysql-insert",
+      "name": "MySQL - Insert Data",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.4,
+      "position": [2420, 0],
+      "credentials": {
+        "mySql": {
+          "id": "MYSQL_CREDENTIAL_ID",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn [{\n  json: {\n    status: 'success',\n    tablesProcessed: items.length,\n    syncedAt: new Date().toISOString(),\n    pipeline: 'clickhouse_to_syntheta'\n  }\n}];"
+      },
+      "id": "build-response-p2",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 0]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Parse Request", "type": "main", "index": 0 }]]
+    },
+    "Parse Request": {
+      "main": [[{ "node": "ClickHouse - List Tables", "type": "main", "index": 0 }]]
+    },
+    "ClickHouse - List Tables": {
+      "main": [[{ "node": "Build Table List", "type": "main", "index": 0 }]]
+    },
+    "Build Table List": {
+      "main": [[{ "node": "Loop Over Tables", "type": "main", "index": 0 }]]
+    },
+    "Loop Over Tables": {
+      "main": [
+        [{ "node": "Build Response", "type": "main", "index": 0 }],
+        [{ "node": "Current Table", "type": "main", "index": 0 }]
+      ]
+    },
+    "Current Table": {
+      "main": [[{ "node": "ClickHouse - Read Table Data", "type": "main", "index": 0 }]]
+    },
+    "ClickHouse - Read Table Data": {
+      "main": [[{ "node": "Parse & Map Types", "type": "main", "index": 0 }]]
+    },
+    "Parse & Map Types": {
+      "main": [[{ "node": "MySQL - Create Database", "type": "main", "index": 0 }]]
+    },
+    "MySQL - Create Database": {
+      "main": [[{ "node": "MySQL - Drop Old Table", "type": "main", "index": 0 }]]
+    },
+    "MySQL - Drop Old Table": {
+      "main": [[{ "node": "MySQL - Create Table", "type": "main", "index": 0 }]]
+    },
+    "MySQL - Create Table": {
+      "main": [[{ "node": "MySQL - Insert Data", "type": "main", "index": 0 }]]
+    },
+    "MySQL - Insert Data": {
+      "main": [[{ "node": "Loop Over Tables", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "etl" },
+    { "name": "clickhouse" },
+    { "name": "syntheta" },
+    { "name": "stage-2" },
+    { "name": "manual-trigger" }
+  ]
+}

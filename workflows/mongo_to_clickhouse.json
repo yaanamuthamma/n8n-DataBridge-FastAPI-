@@ -1,0 +1,219 @@
+{
+  "name": "Stage 1: MongoDB → ClickHouse (Insert/Update Mode)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pipeline1",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "pipeline1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\nconst source = body.source || {};\nif (!source.host || !source.database) {\n  throw new Error('MongoDB host and database are required in source');\n}\n\nconst ch = body.clickhouse || {};\nif (!ch.host || !ch.database) {\n  throw new Error('ClickHouse host and database are required');\n}\n\nconst mode = body.mode || 'insert';\nif (mode !== 'insert' && mode !== 'update') {\n  throw new Error('mode must be \"insert\" or \"update\"');\n}\n\nconst mongoHost = source.host;\nconst mongoPort = source.port || 27017;\nconst mongoUser = source.user || '';\nconst mongoPassword = source.password || '';\nconst mongoDatabase = source.database;\nconst mongoAuthDb = source.authDb || 'admin';\n\nlet mongoUrl;\nif (mongoUser && mongoPassword) {\n  mongoUrl = `mongodb://${encodeURIComponent(mongoUser)}:${encodeURIComponent(mongoPassword)}@${mongoHost}:${mongoPort}/${mongoDatabase}?authSource=${mongoAuthDb}`;\n} else {\n  mongoUrl = `mongodb://${mongoHost}:${mongoPort}/${mongoDatabase}`;\n}\n\nconst collections = body.collections || null;\nconst collection = body.collection || null;\n\nreturn [{\n  json: {\n    mongoUrl, mongoDatabase,\n    mongoHost, mongoPort, mongoUser, mongoPassword, mongoAuthDb,\n    chHost: ch.host, chPort: ch.port || 8123,\n    chUser: ch.user || 'default', chPassword: ch.password || '',\n    chDatabase: ch.database,\n    syncMode: body.syncMode || 'database',\n    collection, collections,\n    mode\n  }\n}];"
+      },
+      "id": "parse-request",
+      "name": "Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $('Parse Request').first().json;\nlet collections;\nif (config.syncMode === 'database' && config.collections && config.collections.length > 0) {\n  collections = config.collections;\n} else if (config.syncMode === 'collection' && config.collection) {\n  collections = [config.collection];\n} else {\n  throw new Error('No collections specified.');\n}\n\nreturn collections.map(name => ({\n  json: {\n    collectionName: name,\n    mongoUrl: config.mongoUrl,\n    mongoDatabase: config.mongoDatabase,\n    chHost: config.chHost, chPort: config.chPort,\n    chUser: config.chUser, chPassword: config.chPassword,\n    chDatabase: config.chDatabase,\n    mode: config.mode\n  }\n}));"
+      },
+      "id": "build-collection-list",
+      "name": "Build Collection List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-collections",
+      "name": "Loop Over Collections",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store current collection context for downstream nodes\nconst item = $input.first().json;\nreturn [{ json: item }];"
+      },
+      "id": "current-collection",
+      "name": "Current Collection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "operation": "find",
+        "collection": "={{ $json.collectionName }}",
+        "query": "{}",
+        "limit": 10000,
+        "options": {}
+      },
+      "id": "mongo-read",
+      "name": "MongoDB - Read Documents",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [1100, 0],
+      "credentials": {
+        "mongoDb": {
+          "id": "MONGO_CREDENTIAL_ID",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const MAX_DEPTH = 5;\nconst SEP = '_';\n\nfunction flatten(obj, prefix, depth) {\n  prefix = prefix || ''; depth = depth || 0;\n  const r = {};\n  if (depth > MAX_DEPTH) { r[prefix] = JSON.stringify(obj); return r; }\n  for (const [k, v] of Object.entries(obj)) {\n    const nk = prefix ? prefix + SEP + k : k;\n    if (k === '__v') continue;\n    if (v === null || v === undefined) r[nk] = null;\n    else if (Array.isArray(v)) r[nk] = JSON.stringify(v);\n    else if (v instanceof Date) r[nk] = v.toISOString();\n    else if (typeof v === 'object') {\n      if (v.$oid) r[nk] = v.$oid;\n      else if (v.$date) r[nk] = new Date(v.$date).toISOString();\n      else if (v.$numberDecimal) r[nk] = parseFloat(v.$numberDecimal);\n      else if (v.$numberLong) r[nk] = parseInt(v.$numberLong, 10);\n      else Object.assign(r, flatten(v, nk, depth + 1));\n    } else r[nk] = v;\n  }\n  return r;\n}\n\n// Get collection context from Current Collection node (isolated per loop iteration)\nconst ctx = $('Current Collection').first().json;\nconst collectionName = ctx.collectionName;\n\nconst output = [];\nfor (const item of $input.all()) {\n  const doc = { ...item.json };\n  if (doc._id) {\n    if (typeof doc._id === 'object' && doc._id.$oid) doc._id = doc._id.$oid;\n    else if (typeof doc._id === 'object') doc._id = JSON.stringify(doc._id);\n  }\n  const flat = flatten(doc);\n  flat._synced_at = new Date().toISOString();\n  flat._collection = collectionName;\n  output.push({ json: flat });\n}\nreturn output;"
+      },
+      "id": "flatten-transform",
+      "name": "Flatten Documents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "function inferCHType(value) {\n  if (value === null || value === undefined) return 'Nullable(String)';\n  if (typeof value === 'boolean') return 'UInt8';\n  if (typeof value === 'number') {\n    if (Number.isInteger(value)) return 'Int64';\n    return 'Float64';\n  }\n  if (typeof value === 'string') {\n    if (/^\\d{4}-\\d{2}-\\d{2}(T|\\s)\\d{2}:\\d{2}/.test(value)) return 'DateTime';\n    return 'String';\n  }\n  return 'String';\n}\n\nfunction sanitizeCol(name) {\n  return name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_+/, 'col_').replace(/_+/g, '_');\n}\n\nconst allItems = $input.all();\nconst sample = allItems[0].json;\n\n// Get context from Current Collection (isolated per loop)\nconst ctx = $('Current Collection').first().json;\nconst collectionName = ctx.collectionName;\nconst chHost = ctx.chHost;\nconst chPort = ctx.chPort;\nconst chUser = ctx.chUser;\nconst chPassword = ctx.chPassword;\nconst dbName = ctx.chDatabase;\nconst mode = ctx.mode;\n\nconst columns = [];\nconst columnMap = {};\nfor (const [key, value] of Object.entries(sample)) {\n  if (key === '_collection') continue;\n  const colName = sanitizeCol(key);\n  columns.push(colName + ' ' + inferCHType(value));\n  columnMap[key] = colName;\n}\n\nlet preSQL;\nlet createSQL;\nif (mode === 'update') {\n  preSQL = 'DROP TABLE IF EXISTS ' + dbName + '.' + collectionName;\n  createSQL = 'CREATE TABLE ' + dbName + '.' + collectionName + ' (' + columns.join(', ') + ') ENGINE = ReplacingMergeTree() ORDER BY (' + sanitizeCol('_id') + ')';\n} else {\n  preSQL = 'SELECT 1';\n  createSQL = 'CREATE TABLE IF NOT EXISTS ' + dbName + '.' + collectionName + ' (' + columns.join(', ') + ') ENGINE = ReplacingMergeTree() ORDER BY (' + sanitizeCol('_id') + ')';\n}\n\n// Build insert body — strip _collection field\nconst rows = [];\nfor (const item of allItems) {\n  const row = {};\n  for (const [origKey, sanitizedKey] of Object.entries(columnMap)) {\n    let val = item.json[origKey];\n    if (typeof val === 'string' && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}/.test(val)) {\n      val = val.slice(0, 19).replace('T', ' ');\n    }\n    if (val === undefined) val = null;\n    row[sanitizedKey] = val;\n  }\n  rows.push(row);\n}\nconst insertBody = rows.map(r => JSON.stringify(r)).join('\\n');\n\nreturn [{\n  json: {\n    preSQL, createSQL, _insertBody: insertBody,\n    tableName: collectionName, dbName, mode,\n    itemCount: rows.length,\n    _debugFirstRow: rows.length > 0 ? JSON.stringify(rows[0]) : '(no rows)',\n    _rowCount: rows.length,\n    chHost, chPort, chUser, chPassword\n  }\n}];"
+      },
+      "id": "infer-schema",
+      "name": "Infer Schema & Build SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://' + $json.chHost + ':' + $json.chPort + '/?user=' + encodeURIComponent($json.chUser) + '&password=' + encodeURIComponent($json.chPassword) + '&query=' + encodeURIComponent('CREATE DATABASE IF NOT EXISTS ' + $json.dbName) }}",
+        "authentication": "none",
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "clickhouse-create-db",
+      "name": "ClickHouse - Create Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://' + $('Infer Schema & Build SQL').first().json.chHost + ':' + $('Infer Schema & Build SQL').first().json.chPort + '/?user=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.chUser) + '&password=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.chPassword) + '&query=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.preSQL) }}",
+        "authentication": "none",
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
+      },
+      "id": "clickhouse-pre-sql",
+      "name": "ClickHouse - Pre SQL (Drop if Update)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://' + $('Infer Schema & Build SQL').first().json.chHost + ':' + $('Infer Schema & Build SQL').first().json.chPort + '/?user=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.chUser) + '&password=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.chPassword) + '&query=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.createSQL) }}",
+        "authentication": "none",
+        "options": { "timeout": 30000 }
+      },
+      "id": "clickhouse-create-table",
+      "name": "ClickHouse - Create Table",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://' + $('Infer Schema & Build SQL').first().json.chHost + ':' + $('Infer Schema & Build SQL').first().json.chPort + '/?user=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.chUser) + '&password=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.chPassword) + '&database=' + encodeURIComponent($('Infer Schema & Build SQL').first().json.dbName) + '&query=' + encodeURIComponent('INSERT INTO ' + $('Infer Schema & Build SQL').first().json.dbName + '.' + $('Infer Schema & Build SQL').first().json.tableName + ' FORMAT JSONEachRow') }}",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "={{ $('Infer Schema & Build SQL').first().json._insertBody }}",
+        "options": { "timeout": 60000, "response": { "response": { "neverError": true, "fullResponse": true } } }
+      },
+      "id": "clickhouse-insert",
+      "name": "ClickHouse - Insert Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop is done — all collections processed\nconst items = $input.all();\nconst count = items.length;\nreturn [{\n  json: {\n    status: 'success',\n    collectionsProcessed: count,\n    syncedAt: new Date().toISOString(),\n    pipeline: 'mongo_to_clickhouse'\n  }\n}];"
+      },
+      "id": "build-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 0]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Parse Request", "type": "main", "index": 0 }]]
+    },
+    "Parse Request": {
+      "main": [[{ "node": "Build Collection List", "type": "main", "index": 0 }]]
+    },
+    "Build Collection List": {
+      "main": [[{ "node": "Loop Over Collections", "type": "main", "index": 0 }]]
+    },
+    "Loop Over Collections": {
+      "main": [
+        [{ "node": "Build Response", "type": "main", "index": 0 }],
+        [{ "node": "Current Collection", "type": "main", "index": 0 }]
+      ]
+    },
+    "Current Collection": {
+      "main": [[{ "node": "MongoDB - Read Documents", "type": "main", "index": 0 }]]
+    },
+    "MongoDB - Read Documents": {
+      "main": [[{ "node": "Flatten Documents", "type": "main", "index": 0 }]]
+    },
+    "Flatten Documents": {
+      "main": [[{ "node": "Infer Schema & Build SQL", "type": "main", "index": 0 }]]
+    },
+    "Infer Schema & Build SQL": {
+      "main": [[{ "node": "ClickHouse - Create Database", "type": "main", "index": 0 }]]
+    },
+    "ClickHouse - Create Database": {
+      "main": [[{ "node": "ClickHouse - Pre SQL (Drop if Update)", "type": "main", "index": 0 }]]
+    },
+    "ClickHouse - Pre SQL (Drop if Update)": {
+      "main": [[{ "node": "ClickHouse - Create Table", "type": "main", "index": 0 }]]
+    },
+    "ClickHouse - Create Table": {
+      "main": [[{ "node": "ClickHouse - Insert Data", "type": "main", "index": 0 }]]
+    },
+    "ClickHouse - Insert Data": {
+      "main": [[{ "node": "Loop Over Collections", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "etl" },
+    { "name": "mongodb" },
+    { "name": "clickhouse" },
+    { "name": "stage-1" },
+    { "name": "insert-update" }
+  ]
+}
