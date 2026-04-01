@@ -1,6 +1,16 @@
 version: '3.8'
 
 services:
+  datasync-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: always
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   n8n:
     image: n8nio/n8n
     restart: always
@@ -11,7 +21,6 @@ services:
       - DB_TYPE=sqlite
       - GENERIC_TIMEZONE=Asia/Kolkata
       - N8N_LOG_LEVEL=info
-      # Only MySQL env needed — used by Stage 2 when connection_id=0
       - MYSQL_HOST=${MYSQL_HOST:-localhost}
       - MYSQL_PORT=${MYSQL_PORT:-3306}
       - MYSQL_USER=${MYSQL_USER:-root}
