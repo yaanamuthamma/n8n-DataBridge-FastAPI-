@@ -1,5 +1,3 @@
 fastapi
 uvicorn
-pymongo
-requests
 pydantic
