@@ -1,11 +1,10 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-import uuid
-import time
-import asyncio
+from typing import Optional, List
+from pymongo import MongoClient
+import requests
 import logging
 import os
 
@@ -22,176 +21,156 @@ app.add_middleware(
 )
 
 
-# ══════════════════════════════════════════════════════════
-#  IN-MEMORY STORES (task queue + agent registry)
-# ══════════════════════════════════════════════════════════
+# ── Models ──────────────────────────────────────────────
 
-# Registered agents: { agent_id: { token, name, last_seen } }
-agents: Dict[str, dict] = {}
-
-# Task queue: { task_id: { agent_id, type, params, status, result, created_at } }
-tasks: Dict[str, dict] = {}
-
-# Simple shared secret — agent must send this to register
-AGENT_SECRET = os.environ.get("AGENT_SECRET", "datasync-secret-2024")
+class MongoListRequest(BaseModel):
+    host: str
+    port: int = 27017
+    database: str
+    user: Optional[str] = None
+    password: Optional[str] = None
+    authDb: str = "admin"
 
 
-# ══════════════════════════════════════════════════════════
-#  MODELS
-# ══════════════════════════════════════════════════════════
-
-class AgentRegisterRequest(BaseModel):
-    name: str = "default-agent"
-    secret: str
-
-class TaskSubmitRequest(BaseModel):
-    task_type: str          # "mongo_list_collections", "ch_list_tables", "ch_create_union"
-    params: Dict[str, Any]
-
-class TaskResultRequest(BaseModel):
-    task_id: str
-    result: Dict[str, Any]
+class UnionTableRequest(BaseModel):
+    chHost: str = "localhost"
+    chPort: int = 8123
+    chUser: str = "default"
+    chPassword: str = ""
+    database: str
+    unionTableName: str
+    sourceTables: List[str]
+    primaryKey: str
 
 
-# ══════════════════════════════════════════════════════════
-#  AGENT ENDPOINTS (called by the local agent)
-# ══════════════════════════════════════════════════════════
+# ── ClickHouse helpers ──────────────────────────────────
 
-@app.post("/agent/register")
-async def register_agent(req: AgentRegisterRequest):
-    """Agent calls this once on startup to get an agent_id + token."""
-    if req.secret != AGENT_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid secret")
-
-    agent_id = str(uuid.uuid4())[:8]
-    token = str(uuid.uuid4())
-    agents[agent_id] = {"token": token, "name": req.name, "last_seen": time.time()}
-    logger.info(f"Agent registered: {agent_id} ({req.name})")
-    return {"agent_id": agent_id, "token": token}
+def ch_query(host, port, user, password, query):
+    resp = requests.post(
+        f"http://{host}:{port}/",
+        params={"user": user, "password": password, "query": query},
+        timeout=300,
+    )
+    if resp.status_code != 200:
+        raise Exception(f"ClickHouse error: {resp.text}")
+    return resp.text
 
 
-def verify_agent(agent_id: str, token: str):
-    """Check agent_id + token are valid."""
-    agent = agents.get(agent_id)
-    if not agent or agent["token"] != token:
-        raise HTTPException(status_code=403, detail="Invalid agent credentials")
-    agent["last_seen"] = time.time()
-    return agent
+def ch_query_json(host, port, user, password, query):
+    resp = requests.post(
+        f"http://{host}:{port}/",
+        params={"user": user, "password": password, "query": query + " FORMAT JSON"},
+        timeout=300,
+    )
+    if resp.status_code != 200:
+        raise Exception(f"ClickHouse error: {resp.text}")
+    return resp.json()
 
 
-@app.get("/agent/{agent_id}/tasks")
-async def get_pending_tasks(agent_id: str, token: str = Header(alias="X-Agent-Token")):
-    """Agent polls this every few seconds to get pending tasks."""
-    verify_agent(agent_id, token)
-
-    pending = []
-    for task_id, task in tasks.items():
-        if task["agent_id"] == agent_id and task["status"] == "pending":
-            pending.append({
-                "task_id": task_id,
-                "task_type": task["task_type"],
-                "params": task["params"],
-            })
-    return {"tasks": pending}
-
-
-@app.post("/agent/{agent_id}/result")
-async def submit_task_result(agent_id: str, req: TaskResultRequest,
-                             token: str = Header(alias="X-Agent-Token")):
-    """Agent sends back the result of a completed task."""
-    verify_agent(agent_id, token)
-
-    task = tasks.get(req.task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task["status"] = "completed"
-    task["result"] = req.result
-    task["completed_at"] = time.time()
-    logger.info(f"Task {req.task_id} completed by agent {agent_id}")
-    return {"status": "ok"}
-
-
-# ══════════════════════════════════════════════════════════
-#  UI-FACING ENDPOINTS (called by the browser)
-# ══════════════════════════════════════════════════════════
-
-def find_active_agent() -> Optional[str]:
-    """Find an agent that was seen in the last 30 seconds."""
-    now = time.time()
-    for agent_id, agent in agents.items():
-        if now - agent["last_seen"] < 30:
-            return agent_id
-    return None
-
-
-def create_task(task_type: str, params: dict) -> str:
-    """Create a task and assign it to an active agent."""
-    agent_id = find_active_agent()
-    if not agent_id:
-        raise HTTPException(status_code=503, detail="No agent connected. Run agent.py on your machine first.")
-
-    task_id = str(uuid.uuid4())[:12]
-    tasks[task_id] = {
-        "agent_id": agent_id,
-        "task_type": task_type,
-        "params": params,
-        "status": "pending",
-        "result": None,
-        "created_at": time.time(),
-        "completed_at": None,
-    }
-    logger.info(f"Task {task_id} ({task_type}) created for agent {agent_id}")
-    return task_id
-
-
-async def wait_for_result(task_id: str, timeout: int = 30) -> dict:
-    """Wait for the agent to complete the task (poll every 0.3s)."""
-    start = time.time()
-    while time.time() - start < timeout:
-        task = tasks.get(task_id)
-        if task and task["status"] == "completed":
-            result = task["result"]
-            # Clean up old task
-            del tasks[task_id]
-            return result
-        await asyncio.sleep(0.3)
-    # Timeout — clean up
-    if task_id in tasks:
-        del tasks[task_id]
-    raise HTTPException(status_code=504, detail="Agent did not respond in time. Is agent.py running?")
-
+# ── Routes ──────────────────────────────────────────────
 
 @app.post("/api/mongo/list-collections")
-async def list_mongo_collections(req: dict):
-    task_id = create_task("mongo_list_collections", req)
-    return await wait_for_result(task_id)
+async def list_mongo_collections(req: MongoListRequest):
+    try:
+        user = req.user if req.user else None
+        password = req.password if req.password else None
+        if user and password:
+            uri = f"mongodb://{user}:{password}@{req.host}:{req.port}/{req.database}?authSource={req.authDb}"
+        else:
+            uri = f"mongodb://{req.host}:{req.port}/{req.database}"
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        db = client[req.database]
+        collections = [c for c in db.list_collection_names() if not c.startswith("system.")]
+        client.close()
+        logger.info(f"Listed {len(collections)} collections from {req.database}")
+        return {"collections": sorted(collections)}
+    except Exception as e:
+        logger.error(f"Failed to list MongoDB collections: {e}")
+        return {"collections": [], "error": str(e)}
 
 
 @app.post("/api/clickhouse/list-tables")
 async def list_clickhouse_tables(req: dict):
-    task_id = create_task("ch_list_tables", req)
-    return await wait_for_result(task_id)
+    try:
+        host = req.get("chHost", "localhost")
+        port = req.get("chPort", 8123)
+        user = req.get("chUser", "default")
+        password = req.get("chPassword", "")
+        database = req.get("database", "")
+        if not database:
+            return {"tables": [], "error": "Database name is required"}
+        result = ch_query_json(host, port, user, password, f"SHOW TABLES FROM {database}")
+        tables = [row["name"] for row in result.get("data", [])]
+        return {"tables": sorted(tables)}
+    except Exception as e:
+        logger.error(f"Failed to list ClickHouse tables: {e}")
+        return {"tables": [], "error": str(e)}
 
 
 @app.post("/api/clickhouse/create-union")
-async def create_or_refresh_union(req: dict):
-    task_id = create_task("ch_create_union", req)
-    return await wait_for_result(task_id)
+async def create_or_refresh_union(req: UnionTableRequest):
+    try:
+        db = req.database
+        union = req.unionTableName
+        tables = req.sourceTables
+        pk = req.primaryKey
+        ch = (req.chHost, req.chPort, req.chUser, req.chPassword)
+
+        if not tables or len(tables) < 2:
+            return {"status": "error", "message": "At least 2 source tables required"}
+
+        schema_result = ch_query_json(*ch, f"DESCRIBE TABLE {db}.{tables[0]}")
+        columns = schema_result.get("data", [])
+        if not columns:
+            return {"status": "error", "message": f"No columns found in {tables[0]}"}
+
+        col_defs, col_names = [], []
+        for col in columns:
+            col_defs.append(f"{col['name']} {col['type']}")
+            col_names.append(col['name'])
+        col_defs.append("updated_at DateTime")
+        col_defs.append("source_table String")
+
+        exists_result = ch_query(*ch, f"EXISTS TABLE {db}.{union}")
+        table_exists = exists_result.strip() == "1"
+
+        if not table_exists:
+            create_sql = (
+                f"CREATE TABLE {db}.{union} (\n"
+                f"  {', '.join(col_defs)}\n"
+                f") ENGINE = ReplacingMergeTree(updated_at)\n"
+                f"ORDER BY ({pk})"
+            )
+            ch_query(*ch, create_sql)
+            logger.info(f"Created union table {db}.{union}")
+
+        select_parts = []
+        for t in tables:
+            cols_str = ", ".join(col_names)
+            select_parts.append(
+                f"SELECT {cols_str}, now() AS updated_at, '{t}' AS source_table FROM {db}.{t}"
+            )
+        ch_query(*ch, f"INSERT INTO {db}.{union} {' UNION ALL '.join(select_parts)}")
+
+        try:
+            ch_query(*ch, f"OPTIMIZE TABLE {db}.{union} FINAL")
+        except Exception as opt_err:
+            logger.warning(f"OPTIMIZE failed (non-critical): {opt_err}")
+
+        count_result = ch_query_json(*ch, f"SELECT count() as cnt FROM {db}.{union} FINAL")
+        row_count = count_result.get("data", [{}])[0].get("cnt", 0)
+        action = "created and populated" if not table_exists else "refreshed"
+
+        return {
+            "status": "success", "action": action,
+            "table": f"{db}.{union}", "sourceTables": tables, "rowCount": row_count,
+        }
+    except Exception as e:
+        logger.error(f"Failed to create/refresh union table: {e}")
+        return {"status": "error", "message": str(e)}
 
 
-# ══════════════════════════════════════════════════════════
-#  STATUS + HTML
-# ══════════════════════════════════════════════════════════
-
-@app.get("/agent/status")
-async def agent_status():
-    """Check if any agent is connected (UI can show this)."""
-    agent_id = find_active_agent()
-    if agent_id:
-        return {"connected": True, "agent_id": agent_id, "name": agents[agent_id]["name"]}
-    return {"connected": False}
-
+# ── Serve the HTML UI ───────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
